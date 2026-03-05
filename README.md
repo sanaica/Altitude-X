@@ -36,5 +36,3 @@ The **Altitude X Airline Reservation System** is a full-stack, dynamic web appli
 * **Data Integrity:** Utilizes strict Primary and Foreign Keys to maintain relationships between Users, Passengers, Bookings, Routes, and Aircraft.
 * **Complex Relationships:** Handles Many-to-Many (M:N) relationships efficiently using junction tables (e.g., the `operated_by` table linking Crew to Aircraft, and `has_route` linking Aircraft to Routes).
 * **Advanced SQL Queries:** Relies on complex `JOIN` operations to fetch human-readable data across multiple tables (e.g., displaying the aircraft model, route, and departure time in a single dropdown menu).
-
-Would you like me to format this into a structured `README.md` file for your code repository, or help you draft the slide content for your presentation?
