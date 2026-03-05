@@ -6,23 +6,100 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] != 'admin') {
 }
 $conn = new mysqli("localhost", "root", "", "altitude_x");
 
-// --- DATA FETCHING ---
+// ==========================================
+// FORM PROCESSING ENGINE (THE BACKEND)
+// ==========================================
+
+// 1. LINK HUB (Add Airport)
+if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_terminal'])) {
+    $code = strtoupper($conn->real_escape_string($_POST['airport_code']));
+    $city = $conn->real_escape_string($_POST['city']);
+    $name = $conn->real_escape_string($_POST['airport_name']);
+    $country = $conn->real_escape_string($_POST['country']);
+
+    $sql = "INSERT INTO airports (airport_code, airport_name, city, country) VALUES ('$code', '$name', '$city', '$country')";
+    $conn->query($sql);
+}
+
+// 2. ROUTE MAP (Add Flight Master Schedule)
+if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_route'])) {
+    $flight_no = strtoupper($conn->real_escape_string($_POST['flight_no']));
+    $source = $_POST['source_code'];
+    $dest = $_POST['dest_code'];
+    $departure = str_replace('T', ' ', $_POST['departure']);
+    $arrival = str_replace('T', ' ', $_POST['arrival']);
+
+    if ($source !== $dest) {
+        $route_check = $conn->query("SELECT route_id FROM route WHERE source_code = '$source' AND destination_code = '$dest'");
+        if ($route_check->num_rows > 0) {
+            $r_data = $route_check->fetch_assoc();
+            $route_id = $r_data['route_id'];
+        } else {
+            $dist = rand(500, 3000); 
+            $conn->query("INSERT INTO route (distance, source_code, destination_code) VALUES ($dist, '$source', '$dest')");
+            $route_id = $conn->insert_id;
+        }
+        $conn->query("INSERT INTO flight_schedule (flight_no, arrival, departure, route_id) VALUES ('$flight_no', '$arrival', '$departure', $route_id)");
+    }
+}
+
+// 3. DEPLOYMENT (Open a Flight Date)
+if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['deploy_flight'])) {
+    $flight_no = $_POST['flight_no'];
+    $date = $_POST['instance_date'];
+    $conn->query("INSERT INTO flight_instance (flight_no, instance_date, status) VALUES ('$flight_no', '$date', 'On Time')");
+}
+
+// 4. OPERATIONS (Update Status & Delay)
+if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['update_ops'])) {
+    $instance_id = $_POST['instance_id'];
+    $new_status = $_POST['new_status'];
+    
+    if ($new_status == 'Delayed') {
+        $d_days = (int)$_POST['delay_days'];
+        $d_hours = (int)$_POST['delay_hours'];
+        $delay_str = "Delayed by {$d_days}D {$d_hours}H.";
+        
+        // Find flight number to shift master schedule
+        $inst_info = $conn->query("SELECT flight_no FROM flight_instance WHERE instance_id = $instance_id")->fetch_assoc();
+        $f_no = $inst_info['flight_no'];
+        
+        $conn->query("UPDATE flight_schedule SET departure = DATE_ADD(departure, INTERVAL $d_days DAY), arrival = DATE_ADD(arrival, INTERVAL $d_days DAY) WHERE flight_no = '$f_no'");
+        $conn->query("UPDATE flight_schedule SET departure = DATE_ADD(departure, INTERVAL $d_hours HOUR), arrival = DATE_ADD(arrival, INTERVAL $d_hours HOUR) WHERE flight_no = '$f_no'");
+        
+        $new_date_query = $conn->query("SELECT DATE(departure) as new_d FROM flight_schedule WHERE flight_no = '$f_no'")->fetch_assoc();
+        $shifted_date = $new_date_query['new_d'];
+        
+        $conn->query("UPDATE flight_instance SET status = 'Delayed', instance_date = '$shifted_date', remarks = '$delay_str' WHERE instance_id = $instance_id");
+    } elseif ($new_status == 'Cancelled') {
+        $conn->query("UPDATE flight_instance SET status = 'Cancelled', remarks = 'FLIGHT CANCELLED' WHERE instance_id = $instance_id");
+        $inst_info = $conn->query("SELECT flight_no FROM flight_instance WHERE instance_id = $instance_id")->fetch_assoc();
+        $f_no = $inst_info['flight_no'];
+        $conn->query("UPDATE booking b JOIN aircraft a ON b.tail_no = a.tail_no JOIN has_route hr ON a.tail_no = hr.tail_no JOIN route r ON hr.route_id = r.route_id JOIN flight_schedule fs ON r.route_id = fs.route_id SET b.payment_status = 'Refunded' WHERE fs.flight_no = '$f_no'");
+    } else {
+        $conn->query("UPDATE flight_instance SET status = 'On Time', remarks = NULL WHERE instance_id = $instance_id");
+    }
+}
+
+// ==========================================
+// DATA FETCHING FOR DROPDOWNS
+// ==========================================
 $airports = $conn->query("SELECT airport_code, city FROM airports ORDER BY city");
 $airport_list = "";
 while($row = $airports->fetch_assoc()) {
     $airport_list .= "<option value='".$row['airport_code']."'>".$row['city']." (".$row['airport_code'].")</option>";
 }
 
-$aircrafts = $conn->query("SELECT tail_no FROM aircraft");
-$aircraft_options = "";
-while($a = $aircrafts->fetch_assoc()) {
-    $aircraft_options .= "<option value='".$a['tail_no']."'>".$a['tail_no']."</option>";
+$schedules = $conn->query("SELECT flight_no FROM flight_schedule");
+$schedule_options = "";
+while($s = $schedules->fetch_assoc()) {
+    $schedule_options .= "<option value='".$s['flight_no']."'>".$s['flight_no']."</option>";
 }
 
-$instances = $conn->query("SELECT flight_no FROM flight_instance");
+$instances = $conn->query("SELECT instance_id, flight_no, instance_date, status FROM flight_instance WHERE instance_date >= CURDATE() ORDER BY instance_date ASC");
 $instance_options = "";
 while($i = $instances->fetch_assoc()) {
-    $instance_options .= "<option value='".$i['flight_no']."'>".$i['flight_no']."</option>";
+    $instance_options .= "<option value='".$i['instance_id']."'>[ID: ".$i['instance_id']."] ".$i['flight_no']." on ".$i['instance_date']."</option>";
 }
 ?>
 
@@ -50,7 +127,6 @@ while($i = $instances->fetch_assoc()) {
         .logo-pillar { width: 4px; height: 35px; background: var(--mustard); box-shadow: 0 0 15px var(--mustard); }
         .logo-x { font-family: 'Syncopate', sans-serif; font-size: 1.6rem; color: white; line-height: 1; }
 
-        /* --- THE MOVING CARDS LOGIC --- */
         .command-tab, .history-tab { 
             background: #ffffff; border-radius: 1.5rem; 
             border: 2px solid transparent; 
@@ -62,36 +138,24 @@ while($i = $instances->fetch_assoc()) {
             will-change: transform;
         }
 
-        .command-tab:hover, .history-tab:hover {
-            transform: translateY(-12px) !important; 
-        }
+        .command-tab:hover, .history-tab:hover { transform: translateY(-12px) !important; }
 
-        /* SEAMLESS GLOWING OUTLINES */
         .border-sky-glow { border: 2px solid #bae6fd; border-bottom: 6px solid var(--sky-bright); }
-        .border-sky-glow:hover { 
-            border-color: var(--sky-bright); 
-            box-shadow: 0 0 25px rgba(14, 165, 233, 0.2), 0 25px 50px -12px rgba(15, 23, 42, 0.1); 
-        }
+        .border-sky-glow:hover { border-color: var(--sky-bright); box-shadow: 0 0 25px rgba(14, 165, 233, 0.2), 0 25px 50px -12px rgba(15, 23, 42, 0.1); }
 
         .border-mustard-glow { border: 2px solid #fef08a; border-bottom: 6px solid var(--mustard); }
-        .border-mustard-glow:hover { 
-            border-color: var(--mustard); 
-            box-shadow: 0 0 25px rgba(234, 179, 8, 0.2), 0 25px 50px -12px rgba(15, 23, 42, 0.1); 
-        }
+        .border-mustard-glow:hover { border-color: var(--mustard); box-shadow: 0 0 25px rgba(234, 179, 8, 0.2), 0 25px 50px -12px rgba(15, 23, 42, 0.1); }
 
-        /* INTERNAL FIELD BORDERS - SHARPENED VISIBILITY */
         .form-input { 
             background: #f8fafc; border-radius: 12px; 
             padding: 12px 16px; width: 100%; outline: none; transition: 0.3s; font-size: 0.85rem;
             color: var(--neutral-grey); font-weight: 600; 
-            border: 2px solid #e2e8f0; /* Base Fallback */
+            border: 2px solid #e2e8f0; 
         }
 
-        /* Visible Blue Internal Borders */
         .border-sky-glow .form-input { border-color: #7dd3fc; } 
         .border-sky-glow .form-input:focus { border-color: var(--sky-bright); box-shadow: 0 0 0 4px rgba(14, 165, 233, 0.15); color: #000; }
 
-        /* Visible Mustard Internal Borders */
         .border-mustard-glow .form-input { border-color: #fde047; } 
         .border-mustard-glow .form-input:focus { border-color: var(--mustard); box-shadow: 0 0 0 4px rgba(234, 179, 8, 0.15); color: #000; }
 
@@ -99,7 +163,6 @@ while($i = $instances->fetch_assoc()) {
 
         .tab-title { font-size: 0.75rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.15em; color: var(--sky-bright); margin-bottom: 1.5rem; display: flex; align-items: center; gap: 8px; }
 
-        /* BUTTONS */
         .tab-btn { 
             padding: 14px; border-radius: 12px; width: 100%; border: none; 
             text-transform: uppercase; letter-spacing: 0.1em; cursor: pointer; 
@@ -113,12 +176,12 @@ while($i = $instances->fetch_assoc()) {
         .tab-btn-mustard { background: var(--pastel-mustard); color: var(--deep-navy); }
         .tab-btn-mustard:hover { background: var(--mustard); color: white; }
 
-        .status-msg { font-size: 9px; font-weight: 800; color: var(--success-green); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; text-align: center; opacity: 0; pointer-events: none; }
         #delay_box { display: none; }
         .badge { padding: 6px 14px; border-radius: 8px; font-size: 10px; font-weight: 800; text-transform: uppercase; }
         .status-on-time { background: #dcfce7; color: #166534; }
         .status-delayed { background: #fef9c3; color: #854d0e; }
         .status-cancelled { background: #fee2e2; color: #991b1b; }
+        .status-refunded { background: #f1f5f9; color: #475569; }
         .manifest-scroll { max-height: 400px; overflow-y: auto; }
     </style>
 </head>
@@ -160,65 +223,78 @@ while($i = $instances->fetch_assoc()) {
         </header>
 
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-12">
+            
             <div class="command-tab p-6 border-sky-glow">
                 <div class="tab-title"><i class="fas fa-map-pin"></i> Terminals</div>
-                <form class="flex flex-col h-full admin-form" data-msg="HUB LINKED">
+                <form method="POST" class="flex flex-col h-full">
                     <div class="space-y-4">
-                        <input type="text" placeholder="ICAO CODE" class="form-input" required>
-                        <input type="text" placeholder="CITY NAME" class="form-input" required>
+                        <input type="text" name="airport_code" placeholder="ICAO CODE (e.g. LHR)" class="form-input" maxlength="10" required>
+                        <input type="text" name="city" placeholder="CITY NAME" class="form-input" required>
+                        <input type="text" name="airport_name" placeholder="FULL AIRPORT NAME" class="form-input" required>
+                        <input type="text" name="country" placeholder="COUNTRY" class="form-input" required>
                     </div>
                     <div class="flex-grow"></div>
-                    <div class="status-msg">HUB LINKED</div>
-                    <button type="submit" class="tab-btn tab-btn-blue">Link Hub</button>
+                    <button type="submit" name="add_terminal" class="tab-btn tab-btn-blue mt-4">Link Hub</button>
                 </form>
             </div>
 
             <div class="command-tab p-6 border-sky-glow">
                 <div class="tab-title"><i class="fas fa-route"></i> Route Map</div>
-                <form class="flex flex-col h-full admin-form" data-msg="ROUTE REGISTERED">
+                <form method="POST" class="flex flex-col h-full">
                     <div class="space-y-4">
-                        <input type="text" placeholder="NEW FLIGHT ID" class="form-input" required>
-                        <select class="form-input" required><option value="" disabled selected>ORIGIN</option><?php echo $airport_list; ?></select>
-                        <select class="form-input" required><option value="" disabled selected>DESTINATION</option><?php echo $airport_list; ?></select>
+                        <input type="text" name="flight_no" placeholder="NEW FLIGHT ID (e.g. AX-500)" class="form-input" required>
+                        <select name="source_code" class="form-input" required>
+                            <option value="" disabled selected>ORIGIN</option>
+                            <?php echo $airport_list; ?>
+                        </select>
+                        <select name="dest_code" class="form-input" required>
+                            <option value="" disabled selected>DESTINATION</option>
+                            <?php echo $airport_list; ?>
+                        </select>
+                        <input type="datetime-local" name="departure" class="form-input" title="Departure Time" required>
+                        <input type="datetime-local" name="arrival" class="form-input" title="Arrival Time" required>
                     </div>
                     <div class="flex-grow"></div>
-                    <div class="status-msg">ROUTE REGISTERED</div>
-                    <button type="submit" class="tab-btn tab-btn-blue">Register</button>
+                    <button type="submit" name="add_route" class="tab-btn tab-btn-blue mt-4">Register Route</button>
                 </form>
             </div>
 
             <div class="command-tab p-6 border-mustard-glow">
                 <div class="tab-title text-[var(--mustard)]"><i class="fas fa-plane-departure"></i> Deployment</div>
-                <form class="flex flex-col h-full admin-form" data-msg="SYSTEM LIVE">
+                <form method="POST" class="flex flex-col h-full">
                     <div class="space-y-4">
-                        <select class="form-input" required><option value="" disabled selected>AIRCRAFT ID</option><?php echo $aircraft_options; ?></select>
-                        <input type="text" onfocus="(this.type='date')" placeholder="DATE" class="form-input" required>
+                        <select name="flight_no" class="form-input" required>
+                            <option value="" disabled selected>MASTER FLIGHT ID</option>
+                            <?php echo $schedule_options; ?>
+                        </select>
+                        <input type="date" name="instance_date" min="<?php echo date('Y-m-d'); ?>" class="form-input" required>
                     </div>
                     <div class="flex-grow"></div>
-                    <div class="status-msg">SYSTEM LIVE</div>
-                    <button type="submit" class="tab-btn tab-btn-mustard">Go Live</button>
+                    <button type="submit" name="deploy_flight" class="tab-btn tab-btn-mustard mt-4">Go Live</button>
                 </form>
             </div>
 
             <div class="command-tab p-6 border-mustard-glow">
                 <div class="tab-title text-[var(--mustard)]"><i class="fas fa-sync-alt"></i> Operations</div>
-                <form class="flex flex-col h-full admin-form" data-msg="STATE OVERRIDDEN">
+                <form method="POST" class="flex flex-col h-full">
                     <div class="space-y-4">
-                        <select class="form-input" required><option value="" disabled selected>TARGET FLIGHT</option><?php echo $instance_options; ?></select>
-                        <select id="st_select" class="form-input" required>
-                            <option value="" disabled selected>STATUS</option>
+                        <select name="instance_id" class="form-input" required>
+                            <option value="" disabled selected>TARGET LIVE FLIGHT</option>
+                            <?php echo $instance_options; ?>
+                        </select>
+                        <select name="new_status" id="st_select" class="form-input" required>
+                            <option value="" disabled selected>UPDATE STATUS</option>
                             <option value="On Time">ON TIME</option>
                             <option value="Delayed">DELAYED</option>
                             <option value="Cancelled">CANCELLED</option>
                         </select>
                         <div id="delay_box" class="flex gap-2">
-                            <input type="number" placeholder="DAYS" class="form-input w-1/2">
-                            <input type="number" placeholder="HRS" class="form-input w-1/2">
+                            <input type="number" name="delay_days" placeholder="DAYS" class="form-input w-1/2" value="0" min="0">
+                            <input type="number" name="delay_hours" placeholder="HRS" class="form-input w-1/2" value="0" min="0" max="23">
                         </div>
                     </div>
                     <div class="flex-grow"></div>
-                    <div class="status-msg">STATE OVERRIDDEN</div>
-                    <button type="submit" class="tab-btn tab-btn-mustard">Push Update</button>
+                    <button type="submit" name="update_ops" class="tab-btn tab-btn-mustard mt-4">Push Update</button>
                 </form>
             </div>
         </div>
@@ -234,34 +310,39 @@ while($i = $instances->fetch_assoc()) {
                         <tr>
                             <th class="p-5 text-[var(--sky-bright)] text-[10px] uppercase font-black">Passenger Identity</th>
                             <th class="p-5 text-[var(--sky-bright)] text-[10px] uppercase font-black">Flight ID</th>
-                            <th class="p-5 text-[var(--sky-bright)] text-[10px] uppercase font-black">Status</th>
+                            <th class="p-5 text-[var(--sky-bright)] text-[10px] uppercase font-black">Flight Status</th>
+                            <th class="p-5 text-[var(--sky-bright)] text-[10px] uppercase font-black">Payment</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-50">
                         <?php
-                        $hist = $conn->query("SELECT p.first_name, p.last_name, fs.flight_no, fi.status FROM booking b JOIN passengers p ON b.passenger_id = p.passenger_id JOIN aircraft a ON b.tail_no = a.tail_no JOIN has_route hr ON a.tail_no = hr.tail_no JOIN route r ON hr.route_id = r.route_id JOIN flight_schedule fs ON r.route_id = fs.route_id JOIN flight_instance fi ON fs.flight_no = fi.flight_no");
-                        if($hist) {
+                        $hist = $conn->query("SELECT p.first_name, p.last_name, fs.flight_no, fi.status, b.payment_status FROM booking b JOIN passengers p ON b.passenger_id = p.passenger_id JOIN aircraft a ON b.tail_no = a.tail_no JOIN has_route hr ON a.tail_no = hr.tail_no JOIN route r ON hr.route_id = r.route_id JOIN flight_schedule fs ON r.route_id = fs.route_id JOIN flight_instance fi ON fs.flight_no = fi.flight_no ORDER BY b.booking_id DESC LIMIT 30");
+                        if($hist && $hist->num_rows > 0) {
                             while($r = $hist->fetch_assoc()):
                                 $cl = ($r['status'] == 'On Time') ? 'status-on-time' : (($r['status'] == 'Cancelled') ? 'status-cancelled' : 'status-delayed');
+                                $pay_cl = ($r['payment_status'] == 'Paid') ? 'status-on-time' : (($r['payment_status'] == 'Refunded') ? 'status-refunded' : 'status-delayed');
                         ?>
                         <tr class="hover:bg-sky-50 transition">
                             <td class="p-5 font-bold text-slate-700"><?php echo $r['first_name']." ".$r['last_name']; ?></td>
                             <td class="p-5 font-mono text-[var(--mustard)] font-bold"><?php echo $r['flight_no']; ?></td>
                             <td class="p-5"><span class="badge <?php echo $cl; ?>"><?php echo $r['status']; ?></span></td>
+                            <td class="p-5"><span class="badge <?php echo $pay_cl; ?>"><?php echo $r['payment_status']; ?></span></td>
                         </tr>
-                        <?php endwhile; } ?>
+                        <?php endwhile; } else { echo "<tr><td colspan='4' class='p-5 text-center text-slate-400'>No active manifest data.</td></tr>"; } ?>
                     </tbody>
                 </table>
             </div>
             <div class="p-8 bg-slate-50 border-t flex justify-center">
-                <button class="tab-btn tab-btn-blue max-w-sm">Synchronize Logs</button>
+                <button onclick="window.location.reload()" class="tab-btn tab-btn-blue max-w-sm">Synchronize Logs</button>
             </div>
         </div>
     </main>
 
     <script>
+        // Live Clock
         setInterval(() => { document.getElementById('live-clock').innerText = new Date().toLocaleTimeString('en-GB'); }, 1000);
 
+        // Input Styling
         const updateFieldColor = (el) => {
             if (el.value && el.value !== "") el.classList.add('filled');
             else el.classList.remove('filled');
@@ -271,20 +352,12 @@ while($i = $instances->fetch_assoc()) {
             el.addEventListener('change', () => updateFieldColor(el));
         });
 
+        // Toggle Delay Box
         document.getElementById('st_select').addEventListener('change', function() {
             document.getElementById('delay_box').style.display = (this.value === 'Delayed') ? 'flex' : 'none';
         });
 
-        document.querySelectorAll('.admin-form').forEach(f => {
-            f.addEventListener('submit', function(e) {
-                e.preventDefault(); 
-                const m = this.querySelector('.status-msg');
-                m.innerText = this.getAttribute('data-msg');
-                gsap.to(m, { opacity: 1, y: -5, duration: 0.4 });
-                setTimeout(() => { gsap.to(m, { opacity: 0, y: 0, duration: 0.4 }); }, 2000);
-            });
-        });
-
+        // GSAP Intro Animations
         window.onload = () => {
             const tl = gsap.timeline({defaults: {ease: "power4.out", duration: 1.2}});
             tl.to(".sidebar", { x: 0 })
