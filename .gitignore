@@ -1,0 +1,6 @@
+# Ignore XAMPP/PHP temp files
+*.log
+.vscode/
+Thumbs.db
+Desktop.ini
+config.php
